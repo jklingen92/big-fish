@@ -1,6 +1,7 @@
 
 
 import argparse
+import json
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -38,44 +39,117 @@ def resize(img, width=None, height=None, inter=cv2.INTER_AREA):
 
     return cv2.resize(img, dim, interpolation=inter)
 
-class FaceDetector:
+def midpoint(p1, p2):
+    return ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+
+class Reference:
     """
-    FaceDetector will identify faces in an image along with their 
+    Reference is a class that implements an estimate function. 
+    """
+
+    def estimate(self, img):
+        """Take an image and return an estimate of the scale of 1 pixel."""
+        raise NotImplemented()
+
+class Reconciler(Reference):
+    """
+    Reconciler is a class that reconciles a number of different reference
+    points based on weights. 
+    """
+
+    references = None
+
+    def estimate(self, img):
+        return sum(ref.estimate(img) * weight for ref, weight in self.references)
+
+
+class FacialReference(Reference):
+    """
+    FacialReference will identify faces in an image along with their 
     predicted age and gender.
     
     The code in this file is drawn from Gil Levi and Tal Hassner's 
     repository: https://github.com/GilLevi/AgeGenderDeepLearning
     """
 
-    def __init__(self):
+    MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
+    GENDER_COMPONENTS = ["Male", "Female"]
+    AGE_INTERVALS = [
+        (0, 2), (4, 6), (8, 12), (15, 20),
+        (25, 32), (38, 43), (48, 53), (60, 100)
+    ]
+
+    def __init__(self, show=False):
         face_proto = "weights/deploy.prototxt"
         gender_proto = "weights/deploy_gender.prototxt"
         age_proto = "weights/deploy_age.prototxt"
+        
         face_model = "weights/res10_300x300_ssd_iter_140000_fp16.caffemodel"
         gender_model = "weights/gender_net.caffemodel"
         age_model = "weights/age_net.caffemodel"
         
-        self.mean_values = (78.4263377603, 87.7689143744, 114.895847746)
-        self.gender_list = ["Male", "Female"]
-        self.age_interval_list = [
-            (0, 2), (4, 6), (8, 12), (15, 20),
-            (25, 32), (38, 43), (48, 53), (60, 100)
-        ]
         self.face_net = cv2.dnn.readNetFromCaffe(face_proto, face_model)
         self.gender_net = cv2.dnn.readNetFromCaffe(gender_proto, gender_model)
         self.age_net = cv2.dnn.readNetFromCaffe(age_proto, age_model)
 
-    def identify(self, img):
+        self.facemark = cv2.face.createFacemarkLBF()
+        self.facemark.loadModel("weights/lbfmodel.yaml")
+
+        self.show = show
+
+    def estimate(self, img):
         faces = self.get_faces(img)
-        for face_coords in faces:
-            start_x, start_y, end_x, end_y = face_coords
-            face = img[start_y:end_y, start_x:end_x]
+        success, landmarks = self.facemark.fit(img, np.array([(f[0], f[1], f[2] - f[0], f[3] - f[1]) for f in faces]))
+        if not success:
+            raise Exception("Failed to identify facial landmarks.")
+
+        # To Do select a face smarter
+        face_coords = faces[0]
+        face_landmarks = landmarks[0]
+        start_x, start_y, end_x, end_y = face_coords
+
+        left_brow = face_landmarks[0][21]
+        right_brow = face_landmarks[0][22]
+        middle_brow = midpoint(left_brow, right_brow)
+    
+        top_nose = face_landmarks[0][27]
+        middle_nose = midpoint(middle_brow, top_nose)
+        bottom_chin = face_landmarks[0][8]
+
+        if self.show:
             cv2.rectangle(img, (start_x, start_y), (end_x, end_y), (255, 0, 0), 2)
-            gender, gender_confidence = self.get_gender(face)
-            age, age_confidence = self.get_age(face)
-            print(f"Found a {gender} ({gender_confidence * 100:.2f}%) between {age[0]} and {age[1]} years old ({age_confidence * 100:.2f}%) ")
-            plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            cv2.line(img, (int(middle_nose[0]), int(middle_nose[1])), (int(bottom_chin[0]), int(bottom_chin[1])),(0, 255, 0), 2)
+            plt.imshow(img)
             plt.show()
+
+        face = img[start_y:end_y, start_x:end_x]
+        expected_value = self.get_expected_facial_height(face)  # in mm
+        actual_value = np.linalg.norm(middle_nose - bottom_chin)  # in px
+        print(f"Reference scale: {actual_value}px = {expected_value}mm > {expected_value / actual_value}mm per pixel")
+        return expected_value / actual_value
+
+    def get_expected_facial_height(self, face):
+        gender_preds = self.get_gender_predictions(face)
+        age_preds = self.get_age_predictions(face)
+        expected_value = 0
+        with open("data/male_facial_height.json", "r") as f:
+            male_data = json.load(f)
+
+        with open("data/female_facial_height.json", "r") as f:
+            female_data = json.load(f)
+        
+        for i, gender_confidence in enumerate(gender_preds[0]):
+            gender_component = self.GENDER_COMPONENTS[i]
+            if gender_component == "Male":
+                age_data = male_data
+            else:
+                age_data = female_data
+            for j, age_confidence in enumerate(age_preds[0]):
+                age_range = self.AGE_INTERVALS[j]
+                age_key = f"({age_range[0]} - {age_range[1]})"
+                expected_value += age_data[age_key]["mean"] * age_confidence * gender_confidence
+        
+        return expected_value
             
     def get_faces(self, frame, threshold=0.5):
         """Detect faces in an image with threshold confidence."""
@@ -100,45 +174,39 @@ class FaceDetector:
                 faces.append((start_x, start_y, end_x, end_y))
         return faces
 
-    def get_gender(self, face):
+    def get_gender_predictions(self, face):
         
         blob = cv2.dnn.blobFromImage(
             image=face, 
             scalefactor=1.0, 
             size=(227, 227), 
-            mean=self.mean_values, 
+            mean=self.MEAN_VALUES, 
             swapRB=False, 
             crop=False
         )
         self.gender_net.setInput(blob)
 
         gender_preds = self.gender_net.forward()
-        i = gender_preds[0].argmax()
-        gender = self.gender_list[i]
-        gender_confidence = gender_preds[0][i]
-        return gender, gender_confidence
+        return gender_preds
     
-    def get_age(self, face):
+    def get_age_predictions(self, face):
         blob = cv2.dnn.blobFromImage(
             image=face, 
             scalefactor=1.0, 
             size=(227, 227),
-            mean=self.mean_values,
+            mean=self.MEAN_VALUES,
             swapRB=False
         )
         self.age_net.setInput(blob)
         age_preds = self.age_net.forward()
-        i = age_preds[0].argmax()
-        age = self.age_interval_list[i]
-        age_confidence = age_preds[0][i]
-        return age, age_confidence
+        return age_preds
 
 
 def id_face(img_location, show=False):
     """Identify the face in the image."""
     img = cv2.imread(img_location)
-    fd = FaceDetector()
-    fd.identify(img)
+    fd = FacialReference(show=show)
+    fd.estimate(img)
 
 
 def measure_fish(img, show=False):
