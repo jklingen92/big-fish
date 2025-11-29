@@ -6,7 +6,6 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-
 def id_fish(img, show=False):
     """Identify the species of fish in the image."""
     pass
@@ -208,11 +207,122 @@ def id_face(img_location, show=False):
     fd = FacialReference(show=show)
     fd.estimate(img)
 
+def find_fish_points(img_location, show=False):
+    """
+    1. 
+    """
+
+    img = cv2.imread(img_location)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    H, S, V = cv2.split(hsv)
+
+    blue_mask = cv2.inRange(
+        hsv,
+        (90, 50, 120),
+        (135, 255, 255)
+    )
+
+    green_mask = cv2.inRange(
+        hsv,
+        (35, 40, 40),
+        (85, 255, 255)
+    )
+
+    blue_green_mask = cv2.bitwise_or(blue_mask, green_mask)
+    img_no_bg = img.copy()
+    img_no_bg[blue_green_mask > 0] = 0
+
+    gray = cv2.cvtColor(img_no_bg, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, fg_mask = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+
+    kernel = np.ones((5, 5), np.uint8)
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    contours_info = cv2.findContours(
+        fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
+
+    best_contour = None
+    best_score = -1.0
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 1000:  # ignore very small blobs
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        if w == 0 or h == 0:
+            continue
+        aspect_ratio = max(w, h) / float(min(w, h))
+        score = area * aspect_ratio  # prefer big & elongated
+        if score > best_score:
+            best_score = score
+            best_contour = c
+
+    leftmost = tuple(best_contour[best_contour[:, :, 0].argmin()][0])
+    rightmost = tuple(best_contour[best_contour[:, :, 0].argmax()][0])
+
+    if show:
+        vis = img.copy()
+        cv2.drawContours(vis, [best_contour], -1, (0, 255, 0), 2)
+        cv2.circle(vis, leftmost, 8, (0, 0, 255), -1)
+        cv2.circle(vis, rightmost, 8, (255, 0, 0), -1)
+        cv2.line(vis, leftmost, rightmost, (0, 255, 255), 2)
+        vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+        plt.imshow(vis_rgb)
+        plt.title("Detected Fish Endpoints")
+        plt.axis("off")
+        plt.show()
+
+    return leftmost, rightmost
+
 
 def measure_fish(img, show=False):
     """Measure the fish in the image."""
-    pass
 
+    img_bgr = cv2.imread(img)
+
+    facial_ref = FacialReference(show=False)
+    mm_per_pixel = facial_ref.estimate(img_bgr)
+
+    p1, p2 = find_fish_points(img, show=False)
+
+    p1_arr = np.array(p1, dtype=np.float32)
+    p2_arr = np.array(p2, dtype=np.float32)
+    pixel_dist = np.linalg.norm(p1_arr - p2_arr)
+
+    length_mm = float(pixel_dist * mm_per_pixel)
+
+    if show:
+        vis = img_bgr.copy()
+        cv2.circle(vis, p1, 8, (0, 0, 255), -1)
+        cv2.circle(vis, p2, 8, (255, 0, 0), -1)
+        cv2.line(vis, p1, p2, (0, 255, 255), 2)
+
+        text = f"{length_mm/10.0:.1f} cm"
+        font_scale = get_font_scale(text, vis.shape[1] // 3)
+        cv2.putText(
+            vis,
+            text,
+            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 10),
+            cv2.FONT_HERSHEY_DUPLEX,
+            font_scale,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+        plt.imshow(vis_rgb)
+        plt.title("Fish Measurement")
+        plt.axis("off")
+        plt.show()
+
+    return length_mm
+    
 
 if __name__ == "__main__":
     REGISTRY = {
