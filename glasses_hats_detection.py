@@ -20,7 +20,7 @@ def load_model(model_name, class_list):
 
 
 
-def detect_and_draw(model, image_path):
+def detect(model, image_path):
     """
     Run detection on a single image and annotate results
     """
@@ -66,6 +66,6 @@ if __name__ == "__main__":
     img_2 = "imgs/inshore-adventures-charter-fishing-st-augustine-redfish-red-drum-24.jpg"
 
     print("***Image 1***")
-    detect_and_draw(model, img_1)
+    detect(model, img_1)
     print("***Image 2***")
-    detect_and_draw(model, img_2)
+    detect(model, img_2)
