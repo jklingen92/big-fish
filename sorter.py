@@ -33,6 +33,9 @@ class ImageSorter:
         
         print(f"Found {len(self.images)} images to sort")
 
+        # Sync JSON files if counts don't match
+        self.sync_json_if_needed()
+
         if self.current_index > 0:
             print(f"\n*** Resuming from image {self.current_index + 1} ***")
             print(f"Previously sorted: {self.kept_count + self.removed_count} images (Kept: {self.kept_count}, Removed: {self.removed_count})")
@@ -62,9 +65,55 @@ class ImageSorter:
         # Start from the next image after the last sorted one
         self.current_index = last_sorted_index + 1
 
+    def sync_json_if_needed(self):
+        """Sync JSON files if counts don't match between images and JSON folders"""
+        kept_img_count = len([f for f in self.kept_dir.iterdir() if f.is_file()])
+        kept_json_count = len([f for f in self.kept_json_dir.iterdir() if f.is_file()])
+        removed_img_count = len([f for f in self.removed_dir.iterdir() if f.is_file()])
+        removed_json_count = len([f for f in self.removed_json_dir.iterdir() if f.is_file()])
+        
+        # Sync kept files if counts don't match
+        if kept_img_count != kept_json_count:
+            print(f"\nSyncing kept JSON files ({kept_json_count} -> {kept_img_count})...")
+            for img_file in self.kept_dir.iterdir():
+                if img_file.is_file():
+                    # Use get_json_path to get the correct JSON filename
+                    json_source = self.get_json_path(img_file)
+                    if json_source:
+                        json_dest = self.kept_json_dir / json_source.name
+                        if not json_dest.exists():
+                            shutil.copy2(json_source, json_dest)
+                    else:
+                        print(f"ERROR: No JSON file found for {img_file.name}")
+        
+        # Sync removed files if counts don't match
+        if removed_img_count != removed_json_count:
+            print(f"\nSyncing removed JSON files ({removed_json_count} -> {removed_img_count})...")
+            for img_file in self.removed_dir.iterdir():
+                if img_file.is_file():
+                    # Use get_json_path to get the correct JSON filename
+                    json_source = self.get_json_path(img_file)
+                    if json_source:
+                        json_dest = self.removed_json_dir / json_source.name
+                        if not json_dest.exists():
+                            shutil.copy2(json_source, json_dest)
+                    else:
+                        print(f"ERROR: No JSON file found for {img_file.name}")
+
     def get_json_path(self, image_path):
         """Find corresponding JSON file for an image"""
-        json_name = image_path.stem + '.json'
+        # Images are named like "angler_x.jpg", JSON files are "record_x.json"
+        image_stem = image_path.stem  # e.g., "angler_123"
+        
+        # Extract the number from the image name
+        if '_' in image_stem:
+            parts = image_stem.split('_')
+            number = parts[-1]  # Get the last part after underscore
+            json_name = f'record_{number}.json'
+        else:
+            # Fallback to original behavior if no underscore
+            json_name = image_stem + '.json'
+        
         json_path = self.json_folder / json_name
         return json_path if json_path.exists() else None
     
@@ -90,21 +139,27 @@ class ImageSorter:
         """Remove image and JSON from output folders"""
         # Remove from kept
         kept_img = self.kept_dir / image_path.name
-        kept_json = self.kept_json_dir / (image_path.stem + '.json')
         if kept_img.exists():
             kept_img.unlink()
             self.kept_count -= 1
-        if kept_json.exists():
-            kept_json.unlink()
+        
+        # Get the correct JSON filename using get_json_path
+        json_source = self.get_json_path(image_path)
+        if json_source:
+            kept_json = self.kept_json_dir / json_source.name
+            if kept_json.exists():
+                kept_json.unlink()
         
         # Remove from removed
         removed_img = self.removed_dir / image_path.name
-        removed_json = self.removed_json_dir / (image_path.stem + '.json')
         if removed_img.exists():
             removed_img.unlink()
             self.removed_count -= 1
-        if removed_json.exists():
-            removed_json.unlink()
+        
+        if json_source:
+            removed_json = self.removed_json_dir / json_source.name
+            if removed_json.exists():
+                removed_json.unlink()
     
     def display_image(self, img, image_path):
         """Add text overlay to image"""
