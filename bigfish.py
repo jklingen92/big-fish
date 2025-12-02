@@ -5,6 +5,10 @@ import json
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+from ultralytics import YOLO
+
+SUNGLASSES_HATS_MODEL = YOLO("yolov8s-world.pt")
+SUNGLASSES_HATS_MODEL.set_classes(["sunglasses", "hat"])
 
 def id_fish(img, show=False):
     """Identify the species of fish in the image."""
@@ -322,6 +326,57 @@ def measure_fish(img, show=False):
         plt.show()
 
     return length_mm
+
+
+
+def detect_sunglasses_hats(img_path, show=False):
+    """
+    Detect sunglasses + hats using YOLO and print measurements.
+    """
+    image = cv2.imread(img_path)
+    if image is None:
+        raise ValueError(f"Image not found: {img_path}")
+
+    results = SUNGLASSES_HATS_MODEL.predict(image, verbose=False)
+
+    detections = []
+
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            label = r.names[cls_id]
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+            width = x2 - x1
+            height = y2 - y1
+
+            print("---Measurement---")
+            print(f"{label}: width={width}px, height={height}px, conf={conf:.2f}")
+            print("-----------------")
+
+            detections.append({
+                "label": label,
+                "bbox": (x1, y1, x2, y2),
+                "confidence": conf,
+                "width": width,
+                "height": height
+            })
+
+            if show:
+                cv2.rectangle(image, (x1, y1), (x2, y2), (0,255,0), 2)
+                cv2.putText(image, f"{label} {conf:.2f}", (x1, y1-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+    if show:
+        plt.figure(figsize=(12,8))
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        plt.imshow(rgb)
+        plt.axis("off")
+        plt.show()
+
+    return detections
+
     
 
 if __name__ == "__main__":
@@ -330,6 +385,7 @@ if __name__ == "__main__":
         "objects": id_objects,
         "face": id_face,
         "measurement": measure_fish,
+        "sunglasses_hats": detect_sunglasses_hats,
     }
 
     parser = argparse.ArgumentParser(
@@ -357,7 +413,9 @@ if __name__ == "__main__":
     if args.run_comp is None:
         fns = list(REGISTRY.items())
     else:
-        fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.fun_comp]
+        # I got AttributeError: 'Namespace' object has no attribute 'fun_comp'. Did you mean: 'run_comp'?
+        #fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.fun_comp]
+        fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.run_comp]
 
     for fn_name, fn_callable in fns:
         print(f"Running {fn_name}...")
