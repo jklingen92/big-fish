@@ -9,6 +9,9 @@ from ultralytics import YOLO
 
 SUNGLASSES_HATS_MODEL = YOLO("yolov8s-world.pt")
 SUNGLASSES_HATS_MODEL.set_classes(["sunglasses", "hat"])
+from fishidentification.fish_segmentation import segment_fish
+from skimage.morphology import skeletonize
+
 
 def id_fish(img, show=False):
     """Identify the species of fish in the image."""
@@ -211,107 +214,157 @@ def id_face(img_location, show=False):
     fd = FacialReference(show=show)
     fd.estimate(img)
 
-def find_fish_points(img_location, show=False):
+def polygon_to_mask(poly, img_shape):
     """
-    1. 
+    poly: (N, 2) array of (x, y) vertices
+    img_shape: (H, W) or (H, W, C) of the original image
+    returns: uint8 mask with 255 on fish, 0 background
     """
+    h, w = img_shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    poly_int = poly.astype(np.int32).reshape(-1, 1, 2)
+    cv2.fillPoly(mask, [poly_int], 255)
+    return mask
 
-    img = cv2.imread(img_location)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    H, S, V = cv2.split(hsv)
 
-    blue_mask = cv2.inRange(
-        hsv,
-        (90, 50, 120),
-        (135, 255, 255)
-    )
 
-    green_mask = cv2.inRange(
-        hsv,
-        (35, 40, 40),
-        (85, 255, 255)
-    )
+def skeleton_from_mask(mask):
+    """
+    mask: uint8 0/255
+    returns: skeleton as a boolean array, True on centerline pixels
+    """
+    skel = skeletonize(mask > 0)  # skel is bool array
+    return skel
 
-    blue_green_mask = cv2.bitwise_or(blue_mask, green_mask)
-    img_no_bg = img.copy()
-    img_no_bg[blue_green_mask > 0] = 0
+from collections import deque
 
-    gray = cv2.cvtColor(img_no_bg, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, fg_mask = cv2.threshold(
-        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
+def moving_average_smooth(path_coords, k=5):
+    pts = np.array(path_coords, dtype=np.float32)
+    smoothed = []
+    for i in range(len(pts)):
+        start = max(0, i - k)
+        end = min(len(pts), i + k + 1)
+        window = pts[start:end]
+        smoothed.append(window.mean(axis=0))
+    return [tuple(p) for p in smoothed]
 
-    kernel = np.ones((5, 5), np.uint8)
-    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    contours_info = cv2.findContours(
-        fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
+def centerline_from_skeleton(skel):
+    """
+    skel: bool array, True on skeleton pixels
+    returns:
+        path_coords: list of (x, y) points along the centerline, in order
+        length_px: curved length in pixels (sum of segment lengths)
+    """
+    ys, xs = np.nonzero(skel)
+    if len(xs) == 0:
+        raise RuntimeError("Skeleton is empty.")
 
-    best_contour = None
-    best_score = -1.0
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 1000:  # ignore very small blobs
-            continue
-        x, y, w, h = cv2.boundingRect(c)
-        if w == 0 or h == 0:
-            continue
-        aspect_ratio = max(w, h) / float(min(w, h))
-        score = area * aspect_ratio  # prefer big & elongated
-        if score > best_score:
-            best_score = score
-            best_contour = c
+    coords = list(zip(xs, ys))           # (x, y)
+    n = len(coords)
+    idx_of = {c: i for i, c in enumerate(coords)}
+    coord_set = set(coords)
 
-    leftmost = tuple(best_contour[best_contour[:, :, 0].argmin()][0])
-    rightmost = tuple(best_contour[best_contour[:, :, 0].argmax()][0])
+    # 8 connected neighbors
+    neighbors = [(-1, -1), (-1, 0), (-1, 1),
+                 ( 0, -1),          ( 0, 1),
+                 ( 1, -1), ( 1, 0), ( 1, 1)]
 
-    if show:
-        vis = img.copy()
-        cv2.drawContours(vis, [best_contour], -1, (0, 255, 0), 2)
-        cv2.circle(vis, leftmost, 8, (0, 0, 255), -1)
-        cv2.circle(vis, rightmost, 8, (255, 0, 0), -1)
-        cv2.line(vis, leftmost, rightmost, (0, 255, 255), 2)
-        vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
-        plt.imshow(vis_rgb)
-        plt.title("Detected Fish Endpoints")
-        plt.axis("off")
-        plt.show()
+    adj = [[] for _ in range(n)]
+    for i, (x, y) in enumerate(coords):
+        for dx, dy in neighbors:
+            nx, ny = x + dx, y + dy
+            if (nx, ny) in coord_set:
+                adj[i].append(idx_of[(nx, ny)])
 
-    return leftmost, rightmost
+    def bfs(start):
+        dist = [-1] * n
+        prev = [-1] * n
+        dist[start] = 0
+        dq = deque([start])
+        while dq:
+            v = dq.popleft()
+            for nb in adj[v]:
+                if dist[nb] == -1:
+                    dist[nb] = dist[v] + 1
+                    prev[nb] = v
+                    dq.append(nb)
+        farthest = max(range(n), key=lambda i: dist[i])
+        return farthest, dist, prev
+
+    # pick any skeleton pixel as start, find farthest A
+    start = 0
+    a, _, _ = bfs(start)
+    # from A, find farthest B and predecessor chain
+    b, _, prev = bfs(a)
+
+    # reconstruct path A -> B
+    path_idx = []
+    cur = b
+    while cur != -1:
+        path_idx.append(cur)
+        if cur == a:
+            break
+        cur = prev[cur]
+    path_idx = path_idx[::-1]  # reverse to get A -> B
+
+    path_coords = [coords[i] for i in path_idx]
+
+    # curved length = sum of distances between consecutive points
+    length_px = 0.0
+    for (x1, y1), (x2, y2) in zip(path_coords[:-1], path_coords[1:]):
+        length_px += float(np.hypot(x2 - x1, y2 - y1))
+
+    smooth_coords = moving_average_smooth(path_coords, k=20)
+
+    return smooth_coords, length_px
+
 
 
 def measure_fish(img, show=False):
-    """Measure the fish in the image."""
+    """Measure the fish in the image using a curved centerline (in millimeters)."""
 
     img_bgr = cv2.imread(img)
+    if img_bgr is None:
+        raise ValueError(f"Could not read image from '{img}'")
 
+    # get mm per pixel from face
     facial_ref = FacialReference(show=False)
     mm_per_pixel = facial_ref.estimate(img_bgr)
 
-    p1, p2 = find_fish_points(img, show=False)
+    # Segment fish -> polygon vertices
+    poly = segment_fish(img)
+    poly = np.asarray(poly, dtype=np.float32)
 
-    p1_arr = np.array(p1, dtype=np.float32)
-    p2_arr = np.array(p2, dtype=np.float32)
-    pixel_dist = np.linalg.norm(p1_arr - p2_arr)
+    # polygon -> mask -> skeleton -> centerline
+    mask = polygon_to_mask(poly, img_bgr.shape)
+    skel = skeleton_from_mask(mask)
+    centerline_pts, length_px = centerline_from_skeleton(skel)
 
-    length_mm = float(pixel_dist * mm_per_pixel)
+    # pixel length -> mm
+    length_mm = float(length_px * mm_per_pixel)
+
+    print(f"Curved fish length: {length_px:.2f} px, {length_mm/10.0:.2f} cm")
 
     if show:
         vis = img_bgr.copy()
-        cv2.circle(vis, p1, 8, (0, 0, 255), -1)
-        cv2.circle(vis, p2, 8, (255, 0, 0), -1)
-        cv2.line(vis, p1, p2, (0, 255, 255), 2)
 
-        text = f"{length_mm/10.0:.1f} cm"
+        # draw centerline as polyline
+        pts_array = np.array(
+            [[int(x), int(y)] for (x, y) in centerline_pts],
+            dtype=np.int32,
+        ).reshape(-1, 1, 2)
+
+        cv2.polylines(vis, [pts_array], isClosed=False, color=(0, 255, 255), thickness=2)
+
+        # Label near the first point on the centerline
+        x0, y0 = centerline_pts[0]
+        text = f"{length_mm / 10.0:.1f} cm"
         font_scale = get_font_scale(text, vis.shape[1] // 3)
         cv2.putText(
             vis,
             text,
-            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 10),
+            (int(x0), int(y0) - 10),
             cv2.FONT_HERSHEY_DUPLEX,
             font_scale,
             (255, 255, 255),
@@ -321,7 +374,7 @@ def measure_fish(img, show=False):
 
         vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
         plt.imshow(vis_rgb)
-        plt.title("Fish Measurement")
+        plt.title("Fish Curved-Length Measurement")
         plt.axis("off")
         plt.show()
 
@@ -377,6 +430,7 @@ def detect_sunglasses_hats(img_path, show=False):
 
     return detections
 
+
     
 
 if __name__ == "__main__":
@@ -415,6 +469,7 @@ if __name__ == "__main__":
     else:
         # I got AttributeError: 'Namespace' object has no attribute 'fun_comp'. Did you mean: 'run_comp'?
         #fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.fun_comp]
+        fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.run_comp]
         fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.run_comp]
 
     for fn_name, fn_callable in fns:

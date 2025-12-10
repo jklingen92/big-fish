@@ -1,0 +1,8 @@
+opencv-python
+numpy>=1.15
+pycocotools>=2.0.2
+Pillow>=10.0.0
+Shapely
+PyYAML==5.1
+torch
+torchvision
