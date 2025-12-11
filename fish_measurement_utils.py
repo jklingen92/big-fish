@@ -136,7 +136,7 @@ def moving_average_smooth(path_coords, k=5):
 
 
 
-def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_ends=True):
+def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_head=True):
     """
     skel: bool array, True on skeleton pixels
     mask: uint8 fish mask (0/255), used to extend endpoints to fish boundary
@@ -202,11 +202,11 @@ def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_ends=True):
     # original skeleton path coordinates (curvy)
     path_coords = [coords[i] for i in path_idx]  # (x, y)
 
-    # --- Smooth the path (still curved) ---
+    #  Smooth the path (still curved)
     smooth_coords = moving_average_smooth(path_coords, k=smooth_k)
 
-    # --- Optionally extend endpoints to the mask boundary ---
-    if extend_to_ends and (mask is not None):
+    #  Optionally extend endpoints to the mask boundary
+    if extend_to_head and (mask is not None):
         h, w = mask.shape[:2]
 
         def normalize(v):
@@ -262,7 +262,7 @@ def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_ends=True):
         smooth_coords[0]  = new_start
         smooth_coords[-1] = new_end
 
-    # --- Curved length along the smoothed (and possibly extended) path ---
+    #  Curved length along the smoothed (and possibly extended) path
     length_px = 0.0
     for (x1, y1), (x2, y2) in zip(smooth_coords[:-1], smooth_coords[1:]):
         length_px += float(np.hypot(x2 - x1, y2 - y1))
@@ -294,8 +294,8 @@ def measure_fish(img, show=False):
     centerline_pts, length_px = centerline_from_skeleton(
         skel,
         mask=mask_smoothed,
-        smooth_k=47,        # tweak: 5,7,9 etc.
-        extend_to_ends=True,
+        smooth_k=55,        # tweak: 5,7,9 etc.
+        extend_to_head=True,
     )
 
     for (x1, y1), (x2, y2) in zip(centerline_pts[:-1], centerline_pts[1:]):
@@ -310,21 +310,21 @@ def measure_fish(img, show=False):
     if show:
         vis = img_bgr.copy()
 
-        # --- Overlay smoothed mask ---
+        # Overlay smoothed mask 
         mask_color = np.zeros_like(vis)
         mask_color[mask_smoothed > 0] = (0, 255, 0)
         vis = cv2.addWeighted(vis, 1.0, mask_color, 0.3, 0)
 
-        # --- Draw mask contour ---
+        #  Draw mask contour 
         contours, _ = cv2.findContours(mask_smoothed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(vis, contours, -1, (0, 255, 0), 2)
 
-        # --- Draw skeleton (you were missing these two variables!) ---
+        #  Draw skeleton 
         ys, xs = np.nonzero(skel)
         for x, y in zip(xs, ys):
             cv2.circle(vis, (int(x), int(y)), 1, (255, 0, 0), -1)
 
-        # --- Draw straightened centerline ---
+        #  Draw straightened centerline 
         centerline_array = np.array(
             [[int(x), int(y)] for (x, y) in centerline_pts],
             dtype=np.int32,
@@ -332,7 +332,7 @@ def measure_fish(img, show=False):
 
         cv2.polylines(vis, [centerline_array], isClosed=False, color=(0, 255, 255), thickness=2)
 
-        # --- Label ---
+        #  Label 
         x0, y0 = centerline_pts[0]
         text = f"{length_inches:.1f} inches"
         font_scale = get_font_scale(text, vis.shape[1] // 3)
