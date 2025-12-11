@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from fishidentification.fish_segmentation import segment_fish
+from scipy.ndimage import distance_transform_edt
 
 
 from skimage.morphology import skeletonize
@@ -48,7 +49,7 @@ def smooth_fish_mask(mask, sigma=5.0, kernel_wrap=True):
     else:
         mask_u8 = (mask > 0).astype(np.uint8) * 255
 
-    # 1. Find the outer contour
+    # Find the outer contour
     contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if len(contours) == 0:
         raise ValueError("No contour found in mask.")
@@ -57,11 +58,11 @@ def smooth_fish_mask(mask, sigma=5.0, kernel_wrap=True):
     cnt = max(contours, key=cv2.contourArea)  # (N, 1, 2)
     pts = cnt[:, 0, :]                        # (N, 2) -> [x, y]
 
-    # 2. Original length = max pairwise distance among contour points
+    # Original length = max pairwise distance among contour points
     # (this is tip-to-tail distance for elongated shapes)
     L0 = pdist(pts.astype(float)).max()
 
-    # 3. Smooth contour coordinates along the index dimension
+    # Smooth contour coordinates along the index dimension
     x = pts[:, 0].astype(float)
     y = pts[:, 1].astype(float)
 
@@ -75,12 +76,12 @@ def smooth_fish_mask(mask, sigma=5.0, kernel_wrap=True):
 
     smooth_pts = np.stack([x_smooth, y_smooth], axis=1)  # (N, 2)
 
-    # 4. Compute new length after smoothing
+    # Compute new length after smoothing
     L1 = pdist(smooth_pts).max()
     if L1 == 0:
         raise ValueError("Smoothed contour collapsed (L1=0). Try smaller sigma.")
 
-    # 5. Scale smoothed contour so L1 -> L0 (preserve length)
+    # Scale smoothed contour so L1 -> L0 (preserve length)
     scale = L0 / L1
 
     # Scale around the shape centroid to avoid drift
@@ -88,7 +89,7 @@ def smooth_fish_mask(mask, sigma=5.0, kernel_wrap=True):
     smooth_pts_centered = smooth_pts - centroid
     smooth_pts_scaled = smooth_pts_centered * scale + centroid
 
-    # 6. Rasterize back to a mask
+    # Rasterize back to a mask
     h, w = mask_u8.shape[:2]
     smoothed_mask = np.zeros((h, w), dtype=np.uint8)
     # cv2.fillPoly expects int32
@@ -132,6 +133,7 @@ def moving_average_smooth(path_coords, k=5):
         window = pts[start:end]
         smoothed.append(window.mean(axis=0))
     return [tuple(p) for p in smoothed]
+
 
 
 def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_ends=True):
@@ -295,6 +297,9 @@ def measure_fish(img, show=False):
         smooth_k=47,        # tweak: 5,7,9 etc.
         extend_to_ends=True,
     )
+
+    for (x1, y1), (x2, y2) in zip(centerline_pts[:-1], centerline_pts[1:]):
+        length_px += float(np.hypot(x2 - x1, y2 - y1))
     # pixel length -> mm
     length_mm = float(length_px * mm_per_pixel)
 
