@@ -243,14 +243,7 @@ def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_head=True):
                 last_inside = (x, y)
             return last_inside
 
-        # start endpoint
-        if len(smooth_coords) >= 2:
-            p0 = smooth_coords[0]
-            p1 = smooth_coords[1]
-            new_start = extend_point(p0, p1, direction_sign=1.0)
-        else:
-            new_start = smooth_coords[0]
-
+     
         # end endpoint
         if len(smooth_coords) >= 2:
             q0 = smooth_coords[-1]
@@ -259,7 +252,18 @@ def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_head=True):
         else:
             new_end = smooth_coords[-1]
 
-        smooth_coords[0]  = new_start
+        # might give a better measurement by only extending one end
+        # but its really hard to say which end is extended
+        ''' 
+        if len(smooth_coords) >= 2:
+            p0 = smooth_coords[0]
+            p1 = smooth_coords[1]
+            new_start = extend_point(p0, p1, direction_sign=1.0)
+        else:
+            new_start = smooth_coords[0]
+
+        smooth_coords[0] = new_start
+        '''
         smooth_coords[-1] = new_end
 
     #  Curved length along the smoothed (and possibly extended) path
