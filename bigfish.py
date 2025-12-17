@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from pprint import pprint
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -68,13 +69,57 @@ class Reconciler(Reference):
         return sum(ref.estimate(img) * weight for ref, weight in self.references)
 
 
+class PoseReference(Reference):
+    """
+    PoseReference will perform the following operations to construct 
+    its estimate:
+        1. Detects the person in the image
+        2. Identify the pose of the person
+        3. Attempt to measure known lengths on the person
+        4. Attempt to determine depth difference from fish to person
+    """
+
+    def __init__(self):
+        pose_proto = "weights/pose_deploy_linevec_faster_4_stages.prototxt"
+        pose_model = "weights/pose_iter_160000.caffemodel"
+        self.net = cv2.dnn.readNetFromCaffe(pose_proto, pose_model)
+
+    def estimate(self, img):
+        blob = cv2.dnn.blobFromImage(img, 1.0 / 255, (368, 368), (0, 0, 0), swapRB=False, crop=False)
+        self.net.setInput(blob)
+        output = self.net.forward()
+        h, w = img.shape[:2]
+        points = []
+        for i in range(15):
+            prob_map = output[0, i, :, :]
+            min_val, prob, min_loc, point = cv2.minMaxLoc(prob_map)
+            x = (w * point[0]) / output.shape[3]
+            y = (h * point[1]) / output.shape[2]
+            if prob > 0.1:
+                points.append((int(x), int(y)))
+                cv2.circle(img, (int(x), int(y)), 5, (0, 255, 255), thickness=-1, lineType=cv2.FILLED)
+                cv2.putText(img, str(i), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, lineType=cv2.LINE_AA)
+            else:
+                points.append(None)
+        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        plt.show()
+        print(points)
+        return 1.0  # Placeholder value
+        
+
 class FacialReference(Reference):
     """
-    FacialReference will identify faces in an image along with their 
-    predicted age and gender.
+    FacialReference will performs the following operations to construct
+    its estimate:
+        1. Finds faces in the image
+        2. Predicts the age and gender of the faces
+        3. Identifies landmarks on the faces
+        4. Measures the morphological facial height
+        5. Compares the facial height to a lookup table to determine a scale
     
-    The code in this file is drawn from Gil Levi and Tal Hassner's 
-    repository: https://github.com/GilLevi/AgeGenderDeepLearning
+    Face, age, and gender determination are drawn from Gil Levi and 
+    Tal Hassner's work: https://github.com/GilLevi/AgeGenderDeepLearning
+
     """
 
     MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
@@ -105,33 +150,109 @@ class FacialReference(Reference):
     def estimate(self, img):
         faces = self.get_faces(img)
         success, landmarks = self.facemark.fit(img, np.array([(f[0], f[1], f[2] - f[0], f[3] - f[1]) for f in faces]))
+
+        if len(faces) == 0:
+            raise Exception("No faces detected.")
         if not success:
             raise Exception("Failed to identify facial landmarks.")
 
-        # To Do select a face smarter
-        face_coords = faces[0]
-        face_landmarks = landmarks[0]
-        start_x, start_y, end_x, end_y = face_coords
+        landmark_img = img.copy()
+        measure_img = img.copy()
 
-        left_brow = face_landmarks[0][21]
-        right_brow = face_landmarks[0][22]
-        middle_brow = midpoint(left_brow, right_brow)
+        references = []
+        # Create a reference point for each face
+        for i, face in enumerate(faces):
+            try:
+                face_landmarks = landmarks[i]
+            except IndexError:
+                print("Failed to get landmarks for face:", i)
+                continue
+
+            start_x, start_y, end_x, end_y = face
+
+            left_brow = face_landmarks[0][21]
+            right_brow = face_landmarks[0][22]
+            middle_brow = midpoint(left_brow, right_brow)
     
-        top_nose = face_landmarks[0][27]
-        middle_nose = midpoint(middle_brow, top_nose)
-        bottom_chin = face_landmarks[0][8]
+            top_nose = face_landmarks[0][27]
+            middle_nose = midpoint(middle_brow, top_nose)
+            lip = face_landmarks[0][62]
 
+            if self.show:
+                cv2.rectangle(landmark_img, (start_x, start_y), (end_x, end_y), (255, 0, 0), 2)
+                cv2.rectangle(measure_img, (start_x, start_y), (end_x, end_y), (255, 0, 0), 2)
+                for (x, y) in face_landmarks[0]:
+                    cv2.circle(landmark_img, (int(x), int(y)), 2, (0, 255, 0), -1)
+                
+                cv2.line(measure_img, (int(left_brow[0]), int(left_brow[1])), (int(right_brow[0]), int(right_brow[1])),(0, 0, 255), 2)
+                cv2.line(measure_img, (int(left_brow[0]), int(left_brow[1])), (int(top_nose[0]), int(top_nose[1])),(0, 0, 255), 2)
+                cv2.line(measure_img, (int(right_brow[0]), int(right_brow[1])), (int(top_nose[0]), int(top_nose[1])),(0, 0, 255), 2)
+                cv2.line(measure_img, (int(middle_nose[0]), int(middle_nose[1])), (int(lip[0]), int(lip[1])),(0, 255, 0), 2)
+
+            face = img[start_y:end_y, start_x:end_x]
+            expected_value, gender_str, age_str = self.get_expected_facial_height(face)  # in mm
+            actual_value = np.linalg.norm(middle_nose - lip)  # in px
+            if self.show:
+                cv2.putText(
+                    measure_img,
+                    gender_str,
+                    (end_x + 10, start_y + 30),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    measure_img,
+                    age_str,
+                    (end_x + 10, start_y + 60),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    measure_img,
+                    f"Expected facial height: {expected_value:.1f}mm",
+                    (end_x + 10, start_y + 90),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    measure_img,
+                    f"Measured facial height: {actual_value:.1f}px",
+                    (end_x + 10, start_y + 120),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    measure_img,
+                    f"Scale: {expected_value / actual_value:.3f}mm per pixel",
+                    (end_x + 10, start_y + 150),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            references.append(expected_value / actual_value)
+        
         if self.show:
-            cv2.rectangle(img, (start_x, start_y), (end_x, end_y), (255, 0, 0), 2)
-            cv2.line(img, (int(middle_nose[0]), int(middle_nose[1])), (int(bottom_chin[0]), int(bottom_chin[1])),(0, 255, 0), 2)
-            plt.imshow(img)
+            plt.imshow(cv2.cvtColor(landmark_img, cv2.COLOR_BGR2RGB))
             plt.show()
 
-        face = img[start_y:end_y, start_x:end_x]
-        expected_value = self.get_expected_facial_height(face)  # in mm
-        actual_value = np.linalg.norm(middle_nose - bottom_chin)  # in px
-        print(f"Reference scale: {actual_value}px = {expected_value}mm > {expected_value / actual_value}mm per pixel")
-        return expected_value / actual_value
+            plt.imshow(cv2.cvtColor(measure_img, cv2.COLOR_BGR2RGB))
+            plt.show()
+        return np.mean(references)
 
     def get_expected_facial_height(self, face):
         gender_preds = self.get_gender_predictions(face)
@@ -143,6 +264,12 @@ class FacialReference(Reference):
         with open("data/female_facial_height.json", "r") as f:
             female_data = json.load(f)
         
+        gender_pred = np.argmax(gender_preds[0])
+        gender_str = f"{self.GENDER_COMPONENTS[gender_pred]} ({gender_preds[0][gender_pred]*100:.2f}%)"
+        age_pred = np.argmax(age_preds[0])
+        age_range = self.AGE_INTERVALS[age_pred]
+        age_str = f"Age Range: {age_range[0]} - {age_range[1]} ({age_preds[0][age_pred]*100:.2f}%)"
+
         for i, gender_confidence in enumerate(gender_preds[0]):
             gender_component = self.GENDER_COMPONENTS[i]
             if gender_component == "Male":
@@ -154,7 +281,7 @@ class FacialReference(Reference):
                 age_key = f"({age_range[0]} - {age_range[1]})"
                 expected_value += age_data[age_key]["mean"] * age_confidence * gender_confidence
         
-        return expected_value
+        return expected_value, gender_str, age_str
             
     def get_faces(self, frame, threshold=0.5):
         """Detect faces in an image with threshold confidence."""
@@ -263,6 +390,55 @@ def detect_sunglasses_hats(img_path, show=False):
     return detections
 
 
+def id_pose(img_location, show=False):
+    """Identify the face in the image."""
+    img = cv2.imread(img_location)
+    fd = PoseReference()
+    fd.estimate(img)
+
+
+def measure_fish(img, show=False):
+    """Measure the fish in the image."""
+
+    img_bgr = cv2.imread(img)
+
+    facial_ref = FacialReference(show=False)
+    mm_per_pixel = facial_ref.estimate(img_bgr)
+
+    p1, p2 = find_fish_points(img, show=False)
+
+    p1_arr = np.array(p1, dtype=np.float32)
+    p2_arr = np.array(p2, dtype=np.float32)
+    pixel_dist = np.linalg.norm(p1_arr - p2_arr)
+
+    length_mm = float(pixel_dist * mm_per_pixel)
+
+    if show:
+        vis = img_bgr.copy()
+        cv2.circle(vis, p1, 8, (0, 0, 255), -1)
+        cv2.circle(vis, p2, 8, (255, 0, 0), -1)
+        cv2.line(vis, p1, p2, (0, 255, 255), 2)
+
+        text = f"{length_mm/10.0:.1f} cm"
+        font_scale = get_font_scale(text, vis.shape[1] // 3)
+        cv2.putText(
+            vis,
+            text,
+            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 10),
+            cv2.FONT_HERSHEY_DUPLEX,
+            font_scale,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+        plt.imshow(vis_rgb)
+        plt.title("Fish Measurement")
+        plt.axis("off")
+        plt.show()
+
+    return length_mm
     
 
 if __name__ == "__main__":
@@ -270,6 +446,7 @@ if __name__ == "__main__":
         "fish": id_fish,
         "objects": id_objects,
         "face": id_face,
+        "pose": id_pose,
         "measurement": measure_fish,
         "sunglasses_hats": detect_sunglasses_hats,
     }
@@ -299,9 +476,6 @@ if __name__ == "__main__":
     if args.run_comp is None:
         fns = list(REGISTRY.items())
     else:
-        # I got AttributeError: 'Namespace' object has no attribute 'fun_comp'. Did you mean: 'run_comp'?
-        #fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.fun_comp]
-        fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.run_comp]
         fns = [(fn_name, REGISTRY[fn_name]) for fn_name in args.run_comp]
 
     for fn_name, fn_callable in fns:
