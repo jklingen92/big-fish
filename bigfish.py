@@ -396,7 +396,7 @@ def id_pose(img_location, show=False):
     fd = PoseReference()
     fd.estimate(img)
 
-
+'''
 def measure_fish(img, show=False):
     """Measure the fish in the image."""
 
@@ -439,7 +439,7 @@ def measure_fish(img, show=False):
         plt.show()
 
     return length_mm
-    
+'''
 
 if __name__ == "__main__":
     REGISTRY = {

@@ -108,18 +108,6 @@ def skeleton_from_mask(mask):
     skel = skeletonize(mask > 0)  # skel is bool array
     return skel
 
-from collections import deque
-
-def moving_average_smooth(path_coords, k=5):
-    pts = np.array(path_coords, dtype=np.float32)
-    smoothed = []
-    for i in range(len(pts)):
-        start = max(0, i - k)
-        end = min(len(pts), i + k + 1)
-        window = pts[start:end]
-        smoothed.append(window.mean(axis=0))
-    return [tuple(p) for p in smoothed]
-
 
 from collections import deque
 import numpy as np
@@ -133,7 +121,6 @@ def moving_average_smooth(path_coords, k=5):
         window = pts[start:end]
         smoothed.append(window.mean(axis=0))
     return [tuple(p) for p in smoothed]
-
 
 
 def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_head=True):
@@ -275,6 +262,8 @@ def centerline_from_skeleton(skel, mask=None, smooth_k=5, extend_to_head=True):
 
 def mm_to_inches(length):
     return (length * 0.0394)
+
+
 
 def measure_fish(img, show=False):
     """Measure the fish in the image using a curved centerline (in millimeters)."""
