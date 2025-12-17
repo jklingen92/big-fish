@@ -1,12 +1,11 @@
+# This file was written with the use of generative AI
+
 import requests
 from bs4 import BeautifulSoup
 import os
 from urllib.parse import urljoin
 import json
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from pathlib import Path
 
 import time
 import re

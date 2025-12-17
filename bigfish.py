@@ -2,7 +2,7 @@
 
 import argparse
 import json
-from pprint import pprint
+
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -402,7 +402,7 @@ if __name__ == "__main__":
         "fish": id_fish,
         "objects": id_objects,
         "face": id_face,
-        "pose": id_pose,
+        # "pose": id_pose,
         "measurement": measure_fish,
         "sunglasses_hats": detect_sunglasses_hats,
     }
