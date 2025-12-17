@@ -396,50 +396,6 @@ def id_pose(img_location, show=False):
     fd = PoseReference()
     fd.estimate(img)
 
-'''
-def measure_fish(img, show=False):
-    """Measure the fish in the image."""
-
-    img_bgr = cv2.imread(img)
-
-    facial_ref = FacialReference(show=False)
-    mm_per_pixel = facial_ref.estimate(img_bgr)
-
-    p1, p2 = find_fish_points(img, show=False)
-
-    p1_arr = np.array(p1, dtype=np.float32)
-    p2_arr = np.array(p2, dtype=np.float32)
-    pixel_dist = np.linalg.norm(p1_arr - p2_arr)
-
-    length_mm = float(pixel_dist * mm_per_pixel)
-
-    if show:
-        vis = img_bgr.copy()
-        cv2.circle(vis, p1, 8, (0, 0, 255), -1)
-        cv2.circle(vis, p2, 8, (255, 0, 0), -1)
-        cv2.line(vis, p1, p2, (0, 255, 255), 2)
-
-        text = f"{length_mm/10.0:.1f} cm"
-        font_scale = get_font_scale(text, vis.shape[1] // 3)
-        cv2.putText(
-            vis,
-            text,
-            (min(p1[0], p2[0]), min(p1[1], p2[1]) - 10),
-            cv2.FONT_HERSHEY_DUPLEX,
-            font_scale,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
-        vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
-        plt.imshow(vis_rgb)
-        plt.title("Fish Measurement")
-        plt.axis("off")
-        plt.show()
-
-    return length_mm
-'''
 
 if __name__ == "__main__":
     REGISTRY = {
